@@ -1,73 +1,88 @@
 import tkinter as tk
 import cv2
-from threading import Thread
+from threading import Thread, Lock
 import time
+import numpy as np
 
-# Global variables
 cameras = {0: None, 1: None}
 selected_cam = None
-stop_threads = False
+camera_active = False
+program_running = True
+lock = Lock()
+capture_thread = None
+
+def toggle_camera(camNumber):
+    global camera_active, selected_cam
+
+    with lock:
+        if selected_cam == camNumber and camera_active:
+            camera_active = False
+        else:
+            selected_cam = camNumber
+            if not camera_active:
+                camera_active = True
+                print(f"Camera {selected_cam} activated.")
 
 def initialize_cameras():
     global cameras
-    # Initialize both cameras
-    cameras[1] = cv2.VideoCapture(1, cv2.CAP_DSHOW)
-    cameras[0] = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-
-    for cam_number, cam in cameras.items():
-        if not cam.isOpened():
-            print(f"Error: Could not open webcam {cam_number}.")
+    for idx in [1, 0]:  # Initialize cameras in a loop
+        cameras[idx] = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+        if cameras[idx].isOpened():
+            cameras[idx].set(cv2.CAP_PROP_FRAME_WIDTH, 720)
+            cameras[idx].set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         else:
-            cam.set(cv2.CAP_PROP_FRAME_WIDTH, 720)
-            cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            print(f"Error: Could not open webcam {idx}.")
 
 def webcam_capture():
-    global selected_cam, stop_threads
+    global selected_cam, camera_active, program_running
 
-    while not stop_threads:
-        if selected_cam is not None:
+    while program_running:
+        if camera_active:
             ret, frame = cameras[selected_cam].read()
             if not ret:
                 print(f"Error: Could not read frame from webcam {selected_cam}.")
-                break
-
-            cv2.imshow(f'Webcam Feed', frame)
-
-            # Break the display loop when 'q' is pressed
+                continue
+            cv2.imshow('Webcam Feed', frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                cv2.destroyAllWindows()
+                break
         else:
-            # Sleep briefly to prevent this loop from consuming too much CPU when no camera is selected
-            time.sleep(0.1)
+            if cv2.getWindowProperty('Webcam Feed', cv2.WND_PROP_VISIBLE) >= 1:
+                cv2.destroyWindow('Webcam Feed')
+            time.sleep(0.1)  # Sleep only when no camera is active
+
+    cv2.destroyAllWindows()
+    for cam in cameras.values():
+        cam.release()
+
+def start_webcam_capture_thread():
+    global capture_thread
+    capture_thread = Thread(target=webcam_capture, daemon=True)
+    capture_thread.start()
 
 def on_button_click(camNumber):
-    global selected_cam
-    selected_cam = camNumber
+    toggle_camera(camNumber)
 
-# Initialize camera resources
-initialize_cameras()
+def close_program():
+    global program_running, root
+    program_running = False
+    root.destroy()
 
-# Start the webcam capture thread
-capture_thread = Thread(target=webcam_capture, daemon=True)
-capture_thread.start()
+if __name__ == "__main__":
+    initialize_cameras()
+    start_webcam_capture_thread()
 
-# Create the main window
-root = tk.Tk()
-root.title("Webcam Activation")
+    root = tk.Tk()
+    root.title("Webcam Activation")
 
-# Create and place buttons using lambda to defer the execution
-left_button = tk.Button(root, text="Left Camera", command=lambda: on_button_click(1))
-right_button = tk.Button(root, text="Right Camera", command=lambda: on_button_click(0))
+    left_button = tk.Button(root, text="Left Camera", command=lambda: on_button_click(1))
+    right_button = tk.Button(root, text="Right Camera", command=lambda: on_button_click(0))
+    # close_button = tk.Button(root, text="Close Program", command=close_program)
 
-left_button.pack(side=tk.LEFT)
-right_button.pack(side=tk.RIGHT)
+    left_button.pack(side=tk.LEFT)
+    right_button.pack(side=tk.RIGHT)
+    # close_button.pack(side=tk.BOTTOM)
 
-# Start the GUI event loop
-root.mainloop()
+    root.mainloop()
 
-# Cleanup
-stop_threads = True
-capture_thread.join()
-for cam in cameras.values():
-    cam.release()
-cv2.destroyAllWindows()
+    if capture_thread.is_alive():
+        capture_thread.join()
